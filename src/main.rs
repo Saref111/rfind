@@ -1,4 +1,4 @@
-use std::{fs, os, path::PathBuf, str::FromStr};
+use std::{error::Error, fs, path::PathBuf, str::FromStr};
 
 use clap::Parser;
 
@@ -8,7 +8,10 @@ struct Cli {
     files: Option<Vec<PathBuf>>,
 
     #[arg(short, long)]
-    name: Option<String>
+    name: Option<String>,
+
+    #[arg(short, long)]
+    iname: bool,
 }
 
 fn main() {
@@ -16,30 +19,52 @@ fn main() {
 
     let paths = args.files.unwrap_or(vec![PathBuf::from_str(".").unwrap()]);
     let name = args.name.unwrap_or("".to_string());
+    let case_insensitive = args.iname;
 
-    read(paths, name);
+    if let Err(e) = find_files(&paths, &name, case_insensitive) {
+        eprintln!("Error: {e}");
+    }
 }
 
-fn read(paths: Vec<PathBuf>, search_exp: String) {
-    if paths.is_empty() {return;}
+fn find_files(paths: &Vec<PathBuf>, search_name: &str, is_case_insens: bool) -> Result<(), Box<dyn Error>>{
+    if paths.is_empty() {return Ok(());}
+    let search_exp = if is_case_insens { search_name.to_lowercase() } else { search_name.to_string() };
 
-    let inner = paths.iter().fold(vec![], |mut acc, it| {
-        if it.is_dir() {
-            let inner_paths = it.read_dir().unwrap();
-            let mut inner_paths: Vec<PathBuf> = inner_paths.map(|d| {
-                d.unwrap().path()
-            }).filter(|it| it.to_string_lossy().contains(&search_exp)).collect();
+    let mut dirs_to_explore = paths.to_vec();
 
-            acc.append(& mut inner_paths);
-            println!("{}", it.to_string_lossy());
+    while let Some(path) = dirs_to_explore.pop() {
+        if path.is_dir() {
+            match fs::read_dir(&path) {
+                Ok(entries) => {
+                    for entry in entries {
+                        let entry = entry?;
+                        let entry_path = entry.path();
+
+                        if entry_path.is_dir() {
+                            dirs_to_explore.push(entry_path);
+                        } else if is_matching(&entry_path, &search_exp, is_case_insens) {
+                            println!("{}", path.display());
+                        }
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Cannot read dir {}: {}", path.display(), e);
+                }
+            }
+        } else if is_matching(&path, &search_exp, is_case_insens) {
+            println!("{}", path.display());
         }
+    }
 
-        if it.is_file() && it.to_string_lossy().contains(&search_exp) {
-            println!("{}", it.to_string_lossy());
+    Ok(())
+}
+
+fn is_matching(path: &PathBuf, search_exp: &str, is_case_insens: bool) -> bool {
+    path.file_name().and_then(|name| name.to_str()).map(|name| {
+        if is_case_insens {
+            name.to_lowercase().contains(search_exp)
+        } else {
+            name.contains(search_exp)
         }
-
-        acc
-    });
-
-    read(inner, search_exp);
+    }).unwrap_or(false)
 }
